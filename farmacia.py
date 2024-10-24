@@ -273,6 +273,19 @@ def agregar_producto(codigo_barras, ticket_text, subtotal_label, total_label, en
         messagebox.showerror("Error", "Producto no encontrado")
         entry_codigo.delete(0, tk.END)
 
+# Función para obtener puntos acumulados
+def obtener_puntos_acumulados(codigo_cupon):
+    puntos = 0
+    with conectar_bd() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT puntos_acumulados FROM cupones WHERE codigo_cupon = %s", (codigo_cupon,))
+            result = cursor.fetchone()
+            if result:
+                puntos = result[0]  # Obtener los puntos acumulados
+            else:
+                messagebox.showwarning("Cupón inválido", "El código de cupón ingresado no es válido.")
+    return puntos
+
 # Función para manejar el pago
 def realizar_pago():
     global total_pedido  # Se declara como global aquí también
@@ -283,8 +296,30 @@ def realizar_pago():
         messagebox.showwarning("Advertencia", "No hay productos en el ticket.")
         return
 
+    # Pedir el código del cupón/membresía
+    codigo_cupon = simpledialog.askstring("Membresía", "Ingrese su código de membresía")
+
+    if not codigo_cupon:
+        messagebox.showwarning("Advertencia", "Debe ingresar un código de membresía.")
+        return
+
+    # Verificar puntos acumulados del cliente
+    puntos_acumulados = obtener_puntos_acumulados(codigo_cupon)  # Función para obtener los puntos actuales del cliente
+
+    # Aplicar el descuento si tiene 5 o más puntos
+    if puntos_acumulados >= 10:
+        descuento = total_pedido * 0.50  # Aplicar el 50% de descuento
+        total_pedido -= descuento  # Aplicar el descuento al total
+        messagebox.showinfo("Descuento Aplicado", "Se ha aplicado un 50% de descuento por puntos acumulados.")
+        # Restar los 5 puntos por usar el descuento
+        actualizar_puntos_cliente(codigo_cupon, -10)  # Restar puntos después de aplicar el descuento
+
+    # Aquí continúa, se muestre o no el descuento
+    # Mostrar el total actualizado antes de pedir el monto de pago
+    messagebox.showinfo("Total a Pagar", f"El total a pagar es: ${total_pedido:.2f}")
+
     # Pedir el monto con el que se paga
-    monto_pago = simpledialog.askfloat("Pago", "Ingrese el monto con el que se pagó:")
+    monto_pago = simpledialog.askfloat("Pago", f"Ingrese el monto con el que se pagó. Total a pagar: ${total_pedido:.2f}")
     
     if monto_pago is None:
         return  # Cancelar si el usuario cierra el cuadro de diálogo
@@ -300,6 +335,18 @@ def realizar_pago():
     # Guardar la compra en la base de datos
     guardar_compra(monto_pago, cambio, ids_productos, cantidades)
 
+    # Determinar la cantidad de puntos que se sumarán en función del total de la compra
+    puntos_a_sumar = 0
+    if total_pedido >= 100 and total_pedido < 200:
+        puntos_a_sumar = 1
+    elif total_pedido >= 200 and total_pedido < 500:
+        puntos_a_sumar = 2
+    elif total_pedido >= 500:
+        puntos_a_sumar = 3
+
+    if puntos_a_sumar > 0:
+        actualizar_puntos_cliente(codigo_cupon, puntos_a_sumar)  # Sumar los puntos correspondientes
+
     # Reiniciar el ticket
     global subtotal_pedido
     subtotal_pedido = 0.0
@@ -309,6 +356,49 @@ def realizar_pago():
     ticket_text.delete(1.0, tk.END)
     subtotal_label.config(text="Subtotal: $0.00")
     total_label.config(text="Total: $0.00")
+
+def actualizar_puntos_cliente(codigo_cupon, puntos):
+    """
+    Actualiza los puntos del cliente basado en su código de cupón/membresía.
+    Se puede sumar o restar puntos.
+    """
+    try:
+        # Conexión a la base de datos
+        conn = conectar_bd()
+        cursor = conn.cursor()
+
+        # Consulta para obtener los puntos actuales del cliente
+        cursor.execute("SELECT puntos_acumulados FROM cupones WHERE codigo_cupon = %s", (codigo_cupon,))
+        resultado = cursor.fetchone()
+
+        if resultado is None:
+            messagebox.showerror("Error", "Código de membresía no encontrado.")
+            return
+
+        puntos_actuales = resultado[0]
+
+        # Calcular los nuevos puntos
+        nuevos_puntos = puntos_actuales + puntos
+
+        # Asegurarse de que los puntos no sean negativos
+        if nuevos_puntos < 0:
+            nuevos_puntos = 0
+
+        # Actualizar los puntos del cliente en la base de datos
+        cursor.execute("UPDATE cupones SET puntos_acumulados = %s WHERE codigo_cupon = %s", (nuevos_puntos, codigo_cupon))
+
+        # Confirmar los cambios
+        conn.commit()
+
+        #messagebox.showinfo("Actualización Exitosa", f"Los puntos del cliente han sido actualizados a {nuevos_puntos}.")
+
+    except Exception as e:
+        messagebox.showerror("Error de Base de Datos", f"Ha ocurrido un error al actualizar los puntos: {str(e)}")
+    
+    finally:
+        # Cerrar la conexión a la base de datos
+        cursor.close()
+        conn.close()
 
 # Función para guardar la compra en la base de datos
 def guardar_compra(pagado, cambio, ids_productos, cantidades):
@@ -325,17 +415,6 @@ def guardar_compra(pagado, cambio, ids_productos, cantidades):
     # Suponiendo que hay un campo en la tabla de compras para el precio unitario, total, fecha, etc.
     total_compra = subtotal_pedido  # Total a pagar es el subtotal
     precio_unitario = total_compra / sum(cantidades) if cantidades else 0
-
-    # Imprimir los datos antes de guardar
-    print("Datos a guardar en la base de datos:")
-    print({
-        "precio_unitario": precio_unitario,
-        "total_compra": total_compra,
-        "pagado": pagado,
-        "cambio": cambio,
-        "ids_productos": ids_productos_str,
-        "cantidades": cantidades_str,
-    })
 
     cursor.execute("""
         INSERT INTO compras (precio_unitario, total, fecha, pagado, cambio, ids_productos, cantidad)
